@@ -6,255 +6,272 @@ A comprehensive backtesting application for testing trading strategies.
 
 import argparse
 import sys
-from datetime import datetime, timedelta
-import yfinance as yf
-import pandas as pd
-import numpy as np
+from datetime import datetime
 import matplotlib.pyplot as plt
-from pathlib import Path
+import pandas as pd
 
-class SimpleBacktester:
-    """Simple backtesting engine for stock strategies."""
+# Import our backtesting framework
+from backtester import (
+    BacktestEngine, 
+    SMAStrategy, 
+    RSIStrategy, 
+    BollingerBandsStrategy, 
+    MomentumStrategy,
+    MultiStrategyPortfolio
+)
+
+
+def create_strategy(strategy_name: str, **kwargs):
+    """Factory function to create strategies."""
+    strategies = {
+        'sma': SMAStrategy,
+        'sma_crossover': SMAStrategy,
+        'rsi': RSIStrategy,
+        'bollinger': BollingerBandsStrategy,
+        'momentum': MomentumStrategy
+    }
     
-    def __init__(self, symbol, start_date, end_date=None, initial_capital=10000):
-        self.symbol = symbol.upper()
-        self.start_date = start_date
-        self.end_date = end_date or datetime.now().strftime('%Y-%m-%d')
-        self.initial_capital = initial_capital
-        self.data = None
-        self.trades = []
-        self.position = 0  # 0 = no position, 1 = long, -1 = short
-        self.cash = initial_capital
-        self.shares = 0
-        
-    def fetch_data(self):
-        """Fetch historical stock data."""
-        print(f"Fetching data for {self.symbol} from {self.start_date} to {self.end_date}...")
-        try:
-            ticker = yf.Ticker(self.symbol)
-            self.data = ticker.history(start=self.start_date, end=self.end_date)
-            if self.data.empty:
-                raise ValueError(f"No data found for symbol {self.symbol}")
-            print(f"✓ Successfully fetched {len(self.data)} days of data")
-            return True
-        except Exception as e:
-            print(f"✗ Error fetching data: {e}")
-            return False
+    strategy_class = strategies.get(strategy_name.lower())
+    if not strategy_class:
+        available = list(strategies.keys())
+        raise ValueError(f"Unknown strategy '{strategy_name}'. Available: {available}")
     
-    def add_indicators(self):
-        """Add technical indicators to the data."""
-        # Simple Moving Averages
-        self.data['SMA_20'] = self.data['Close'].rolling(window=20).mean()
-        self.data['SMA_50'] = self.data['Close'].rolling(window=50).mean()
-        
-        # RSI
-        delta = self.data['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss
-        self.data['RSI'] = 100 - (100 / (1 + rs))
-        
-        # Bollinger Bands
-        self.data['BB_middle'] = self.data['Close'].rolling(window=20).mean()
-        bb_std = self.data['Close'].rolling(window=20).std()
-        self.data['BB_upper'] = self.data['BB_middle'] + (bb_std * 2)
-        self.data['BB_lower'] = self.data['BB_middle'] - (bb_std * 2)
-        
-    def sma_crossover_strategy(self):
-        """Simple Moving Average Crossover Strategy."""
-        signals = []
-        
-        for i in range(len(self.data)):
-            if i < 50:  # Need enough data for SMA_50
-                signals.append(0)
-                continue
-                
-            current_price = self.data.iloc[i]['Close']
-            sma_20 = self.data.iloc[i]['SMA_20']
-            sma_50 = self.data.iloc[i]['SMA_50']
-            prev_sma_20 = self.data.iloc[i-1]['SMA_20']
-            prev_sma_50 = self.data.iloc[i-1]['SMA_50']
-            
-            # Buy signal: SMA_20 crosses above SMA_50
-            if (sma_20 > sma_50 and prev_sma_20 <= prev_sma_50 and self.position == 0):
-                self.buy(current_price, self.data.index[i])
-                signals.append(1)
-            # Sell signal: SMA_20 crosses below SMA_50
-            elif (sma_20 < sma_50 and prev_sma_20 >= prev_sma_50 and self.position == 1):
-                self.sell(current_price, self.data.index[i])
-                signals.append(-1)
-            else:
-                signals.append(0)
-                
-        self.data['Signal'] = signals
-        
-    def buy(self, price, date):
-        """Execute buy order."""
-        if self.cash > price:
-            self.shares = self.cash // price
-            self.cash -= self.shares * price
-            self.position = 1
-            self.trades.append({
-                'Date': date,
-                'Type': 'BUY',
-                'Price': price,
-                'Shares': self.shares,
-                'Cash': self.cash
-            })
-            print(f"BUY: {self.shares} shares at ${price:.2f} on {date.strftime('%Y-%m-%d')}")
+    return strategy_class(**kwargs)
+
+
+def plot_results(engine, symbol):
+    """Plot backtest results with portfolio performance."""
+    if not engine.results:
+        print("No results to plot")
+        return
     
-    def sell(self, price, date):
-        """Execute sell order."""
-        if self.shares > 0:
-            self.cash += self.shares * price
-            sold_shares = self.shares
-            self.shares = 0
-            self.position = 0
-            self.trades.append({
-                'Date': date,
-                'Type': 'SELL',
-                'Price': price,
-                'Shares': sold_shares,
-                'Cash': self.cash
-            })
-            print(f"SELL: {sold_shares} shares at ${price:.2f} on {date.strftime('%Y-%m-%d')}")
+    portfolio_history = engine.get_portfolio_history()
+    price_data = engine.data[symbol]
     
-    def calculate_performance(self):
-        """Calculate performance metrics."""
-        # Final portfolio value
-        final_price = self.data['Close'].iloc[-1]
-        portfolio_value = self.cash + (self.shares * final_price)
-        
-        # Returns
-        total_return = (portfolio_value - self.initial_capital) / self.initial_capital * 100
-        
-        # Buy and hold return for comparison
-        buy_hold_return = (final_price - self.data['Close'].iloc[0]) / self.data['Close'].iloc[0] * 100
-        
-        # Calculate daily returns for Sharpe ratio
-        self.data['Portfolio_Value'] = self.cash
-        for i, row in self.data.iterrows():
-            current_shares = self.shares if i >= self.data.index[-1] else 0
-            # This is simplified - in reality you'd track portfolio value day by day
-            pass
-        
-        return {
-            'Initial Capital': self.initial_capital,
-            'Final Portfolio Value': portfolio_value,
-            'Total Return (%)': total_return,
-            'Buy & Hold Return (%)': buy_hold_return,
-            'Number of Trades': len(self.trades),
-            'Final Cash': self.cash,
-            'Final Shares': self.shares,
-            'Alpha (vs Buy & Hold)': total_return - buy_hold_return
-        }
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
     
-    def run_backtest(self, strategy='sma_crossover'):
-        """Run the complete backtest."""
-        if not self.fetch_data():
-            return None
-            
-        self.add_indicators()
-        
-        if strategy == 'sma_crossover':
-            self.sma_crossover_strategy()
-        else:
-            print(f"Strategy '{strategy}' not implemented yet.")
-            return None
-            
-        return self.calculate_performance()
+    # 1. Price chart with trades
+    ax1.plot(price_data.index, price_data['Close'], label='Close Price', linewidth=1.5)
     
-    def plot_results(self):
-        """Plot the backtest results."""
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-        
-        # Price and moving averages
-        ax1.plot(self.data.index, self.data['Close'], label='Close Price', linewidth=1)
-        ax1.plot(self.data.index, self.data['SMA_20'], label='SMA 20', alpha=0.7)
-        ax1.plot(self.data.index, self.data['SMA_50'], label='SMA 50', alpha=0.7)
-        
-        # Buy/Sell signals
-        buy_signals = self.data[self.data['Signal'] == 1]
-        sell_signals = self.data[self.data['Signal'] == -1]
-        
-        ax1.scatter(buy_signals.index, buy_signals['Close'], color='green', marker='^', s=100, label='Buy')
-        ax1.scatter(sell_signals.index, sell_signals['Close'], color='red', marker='v', s=100, label='Sell')
-        
-        ax1.set_title(f'{self.symbol} - Price and Trading Signals')
-        ax1.set_ylabel('Price ($)')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # RSI
-        ax2.plot(self.data.index, self.data['RSI'], label='RSI', color='purple')
-        ax2.axhline(y=70, color='r', linestyle='--', alpha=0.5, label='Overbought (70)')
-        ax2.axhline(y=30, color='g', linestyle='--', alpha=0.5, label='Oversold (30)')
-        ax2.set_title('RSI Indicator')
-        ax2.set_ylabel('RSI')
-        ax2.set_xlabel('Date')
+    # Mark buy/sell trades
+    for trade in engine.portfolio.trades:
+        color = 'green' if trade.type == 'BUY' else 'red'
+        marker = '^' if trade.type == 'BUY' else 'v'
+        ax1.scatter(trade.date, trade.price, color=color, marker=marker, s=100, alpha=0.8)
+    
+    ax1.set_title(f'{symbol} - Price and Trading Signals')
+    ax1.set_ylabel('Price ($)')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # 2. Portfolio value over time
+    if not portfolio_history.empty:
+        ax2.plot(portfolio_history.index, portfolio_history['total_value'], 
+                label='Portfolio Value', linewidth=2, color='blue')
+        ax2.axhline(y=engine.initial_capital, color='gray', linestyle='--', 
+                   alpha=0.5, label='Initial Capital')
+        ax2.set_title('Portfolio Value Over Time')
+        ax2.set_ylabel('Portfolio Value ($)')
         ax2.legend()
         ax2.grid(True, alpha=0.3)
+    
+    # 3. Returns comparison
+    if not portfolio_history.empty:
+        cumulative_returns = portfolio_history['cumulative_returns'] * 100
         
-        plt.tight_layout()
-        plt.show()
+        # Calculate buy & hold returns
+        buy_hold_returns = (price_data['Close'] / price_data['Close'].iloc[0] - 1) * 100
+        
+        ax3.plot(cumulative_returns.index, cumulative_returns, 
+                label='Strategy Returns', linewidth=2, color='blue')
+        ax3.plot(buy_hold_returns.index, buy_hold_returns, 
+                label='Buy & Hold Returns', linewidth=2, color='orange', alpha=0.7)
+        ax3.set_title('Cumulative Returns Comparison')
+        ax3.set_ylabel('Returns (%)')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+    
+    # 4. Drawdown chart
+    if not portfolio_history.empty:
+        rolling_max = portfolio_history['total_value'].expanding().max()
+        drawdown = (portfolio_history['total_value'] - rolling_max) / rolling_max * 100
+        
+        ax4.fill_between(drawdown.index, drawdown, 0, alpha=0.3, color='red')
+        ax4.plot(drawdown.index, drawdown, color='red', linewidth=1)
+        ax4.set_title('Portfolio Drawdown')
+        ax4.set_ylabel('Drawdown (%)')
+        ax4.set_xlabel('Date')
+        ax4.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def run_comparison(symbols, strategy_name, start_date, end_date, initial_capital, **strategy_kwargs):
+    """Run backtest comparison across multiple symbols."""
+    print(f"\n🔄 RUNNING COMPARISON ACROSS {len(symbols)} SYMBOLS")
+    print("=" * 60)
+    
+    results_summary = []
+    
+    for symbol in symbols:
+        print(f"\n📈 Testing {symbol}...")
+        
+        # Create engine and strategy
+        engine = BacktestEngine(initial_capital=initial_capital)
+        strategy = create_strategy(strategy_name, **strategy_kwargs)
+        
+        # Fetch data and run backtest
+        if engine.fetch_data(symbol, start_date, end_date):
+            try:
+                results = engine.run_strategy(strategy)
+                
+                results_summary.append({
+                    'Symbol': symbol,
+                    'Total Return (%)': results['total_return_pct'],
+                    'Buy & Hold (%)': results['buy_hold_return_pct'],
+                    'Excess Return (%)': results['excess_return_pct'],
+                    'Sharpe Ratio': results['sharpe_ratio'],
+                    'Max Drawdown (%)': results['max_drawdown_pct'],
+                    'Win Rate (%)': results['win_rate_pct'],
+                    'Total Trades': results['total_trades']
+                })
+                
+            except Exception as e:
+                print(f"Error running backtest for {symbol}: {e}")
+        else:
+            print(f"Failed to fetch data for {symbol}")
+    
+    # Display comparison results
+    if results_summary:
+        df = pd.DataFrame(results_summary)
+        print(f"\n📊 COMPARISON RESULTS")
+        print("=" * 80)
+        print(df.to_string(index=False, float_format='%.2f'))
+        
+        # Summary statistics
+        print(f"\n📈 SUMMARY STATISTICS")
+        print("-" * 40)
+        print(f"Average Total Return:    {df['Total Return (%)'].mean():>8.2f}%")
+        print(f"Average Excess Return:   {df['Excess Return (%)'].mean():>8.2f}%")
+        print(f"Average Sharpe Ratio:    {df['Sharpe Ratio'].mean():>8.2f}")
+        print(f"Average Win Rate:        {df['Win Rate (%)'].mean():>8.2f}%")
+        print(f"Best Performer:          {df.loc[df['Total Return (%)'].idxmax(), 'Symbol']}")
+        print(f"Worst Performer:         {df.loc[df['Total Return (%)'].idxmin(), 'Symbol']}")
+
 
 def main():
     """Main function to run the backtester."""
-    parser = argparse.ArgumentParser(description='Stock Backtester')
-    parser.add_argument('--symbol', '-s', type=str, default='AAPL', help='Stock symbol (default: AAPL)')
-    parser.add_argument('--start', type=str, default='2022-01-01', help='Start date (YYYY-MM-DD)')
-    parser.add_argument('--end', type=str, help='End date (YYYY-MM-DD), default: today')
-    parser.add_argument('--capital', '-c', type=float, default=10000, help='Initial capital (default: 10000)')
-    parser.add_argument('--strategy', type=str, default='sma_crossover', help='Strategy to use (default: sma_crossover)')
+    parser = argparse.ArgumentParser(description='Advanced Stock Backtester')
+    
+    # Basic parameters
+    parser.add_argument('--symbol', '-s', type=str, default='AAPL', 
+                       help='Stock symbol (default: AAPL)')
+    parser.add_argument('--symbols', nargs='+', 
+                       help='Multiple symbols for comparison (e.g., --symbols AAPL MSFT GOOGL)')
+    parser.add_argument('--start', type=str, default='2022-01-01', 
+                       help='Start date (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, 
+                       help='End date (YYYY-MM-DD), default: today')
+    parser.add_argument('--capital', '-c', type=float, default=10000, 
+                       help='Initial capital (default: 10000)')
+    
+    # Strategy parameters
+    parser.add_argument('--strategy', type=str, default='sma', 
+                       help='Strategy: sma, rsi, bollinger, momentum (default: sma)')
+    parser.add_argument('--short-window', type=int, default=20, 
+                       help='Short window for SMA strategy (default: 20)')
+    parser.add_argument('--long-window', type=int, default=50, 
+                       help='Long window for SMA strategy (default: 50)')
+    parser.add_argument('--rsi-period', type=int, default=14, 
+                       help='RSI period (default: 14)')
+    parser.add_argument('--oversold', type=int, default=30, 
+                       help='RSI oversold level (default: 30)')
+    parser.add_argument('--overbought', type=int, default=70, 
+                       help='RSI overbought level (default: 70)')
+    
+    # Output options
     parser.add_argument('--plot', action='store_true', help='Show plots')
+    parser.add_argument('--compare', action='store_true', 
+                       help='Run comparison across multiple symbols')
+    parser.add_argument('--verbose', '-v', action='store_true', 
+                       help='Verbose output')
     
     args = parser.parse_args()
     
-    print("=" * 50)
-    print("🚀 STOCK BACKTESTER")
-    print("=" * 50)
-    print(f"Symbol: {args.symbol}")
+    # Determine symbols to test
+    if args.symbols:
+        symbols = [s.upper() for s in args.symbols]
+    else:
+        symbols = [args.symbol.upper()]
+    
+    # Strategy parameters
+    strategy_kwargs = {}
+    if args.strategy.lower() in ['sma', 'sma_crossover']:
+        strategy_kwargs = {
+            'short_window': args.short_window,
+            'long_window': args.long_window
+        }
+    elif args.strategy.lower() == 'rsi':
+        strategy_kwargs = {
+            'rsi_period': args.rsi_period,
+            'oversold': args.oversold,
+            'overbought': args.overbought
+        }
+    
+    print("=" * 60)
+    print("🚀 ADVANCED STOCK BACKTESTER")
+    print("=" * 60)
+    print(f"Strategy: {args.strategy.upper()}")
     print(f"Period: {args.start} to {args.end or 'today'}")
     print(f"Initial Capital: ${args.capital:,.2f}")
-    print(f"Strategy: {args.strategy}")
-    print("-" * 50)
+    print(f"Symbols: {', '.join(symbols)}")
+    if strategy_kwargs:
+        print(f"Strategy Parameters: {strategy_kwargs}")
+    print("-" * 60)
     
-    # Initialize backtester
-    bt = SimpleBacktester(
-        symbol=args.symbol,
-        start_date=args.start,
-        end_date=args.end,
-        initial_capital=args.capital
-    )
-    
-    # Run backtest
-    results = bt.run_backtest(strategy=args.strategy)
-    
-    if results:
-        print("\n📊 BACKTEST RESULTS")
-        print("-" * 50)
-        for key, value in results.items():
-            if isinstance(value, float):
-                if '%' in key:
-                    print(f"{key:<25}: {value:>8.2f}%")
-                else:
-                    print(f"{key:<25}: ${value:>10,.2f}")
-            else:
-                print(f"{key:<25}: {value:>12}")
+    if args.compare and len(symbols) > 1:
+        # Run comparison mode
+        run_comparison(symbols, args.strategy, args.start, args.end, 
+                      args.capital, **strategy_kwargs)
+    else:
+        # Run single backtest
+        symbol = symbols[0]
         
-        print("\n💼 TRADE HISTORY")
-        print("-" * 50)
-        if bt.trades:
-            for trade in bt.trades:
-                print(f"{trade['Date'].strftime('%Y-%m-%d')}: {trade['Type']} {trade['Shares']} shares @ ${trade['Price']:.2f}")
+        # Create engine and strategy
+        engine = BacktestEngine(initial_capital=args.capital)
+        strategy = create_strategy(args.strategy, **strategy_kwargs)
+        
+        # Fetch data and run backtest
+        if engine.fetch_data(symbol, args.start, args.end):
+            print(f"\n🔄 Running {strategy.name} strategy...")
+            
+            try:
+                results = engine.run_strategy(strategy)
+                
+                # Print detailed results
+                engine.print_summary()
+                
+                if args.verbose and engine.portfolio.trades:
+                    print(f"\n💼 DETAILED TRADE HISTORY")
+                    print("-" * 60)
+                    for trade in engine.portfolio.trades:
+                        print(f"{trade.date.strftime('%Y-%m-%d')}: {trade}")
+                
+                # Show plots if requested
+                if args.plot:
+                    plot_results(engine, symbol)
+                    
+            except Exception as e:
+                print(f"❌ Error running backtest: {e}")
+                sys.exit(1)
         else:
-            print("No trades executed.")
-        
-        if args.plot:
-            bt.plot_results()
+            print(f"❌ Failed to fetch data for {symbol}")
+            sys.exit(1)
     
-    print("\n" + "=" * 50)
-    print("✅ Backtest completed!")
-    
+    print(f"\n{'='*60}")
+    print("✅ Backtest completed successfully!")
+
+
 if __name__ == "__main__":
     main()
