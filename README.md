@@ -23,7 +23,7 @@ A comprehensive stock backtesting application that allows you to test trading st
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/ClaudeIntegrationTest.git
+git clone https://github.com/AI-Bobby-Newb/ClaudeIntegrationTest.git
 cd ClaudeIntegrationTest
 
 # Create virtual environment
