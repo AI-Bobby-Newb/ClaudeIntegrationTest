@@ -1,4 +1,0 @@
-- name: Install TA-Lib system dependencies
-  run: |
-    sudo apt-get update
-    sudo apt-get install -y ta-lib
