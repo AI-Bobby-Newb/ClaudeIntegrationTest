@@ -9,6 +9,7 @@ import sys
 from datetime import datetime
 import matplotlib.pyplot as plt
 import pandas as pd
+import talib
 
 # Import our backtesting framework
 from backtester import (
